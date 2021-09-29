@@ -40,42 +40,86 @@ def get_cfg():
         required=False,
         help="Filter captures by PID"
     )
+    parser.add_argument(
+        "--no-libgnutls",
+        dest="no_libgnutls",
+        action="store_true",
+        help="Do not add probes to libgnutls"
+    )
+    parser.add_argument(
+        "--no-libssl",
+        dest="no_libssl",
+        action="store_true",
+        help="Do not add probes to libssl"
+    )
     args = parser.parse_args()
 
     return {
         "encoding": args.encoding,
         "filter_comm": args.filter_comm,
         "filter_pid": int(args.filter_pid) if args.filter_pid else None,
+        "no_libgnutls": args.no_libgnutls,
+        "no_libssl": args.no_libssl,
         "out_path": os.path.abspath(args.output_path)
         if args.output_path else None,
     }
 
 
-def setup_bpf():
+def setup_bpf(cfg):
     """Compile BPF from ssl-tracer.c and attach uprobes. Return BPF."""
     try:
+        if cfg["no_libssl"] and cfg["no_libgnutls"]:
+            raise Exception("No probes to attach as all libraries are disabled")
+
         b = BPF(src_file="ssl-tracer.c")
-        b.attach_uprobe(
-            name="ssl",
-            sym="SSL_read",
-            fn_name="ssl_read_entry"
-        )
-        b.attach_uretprobe(
-            name="ssl",
-            sym="SSL_read",
-            fn_name="ssl_read_return"
-        )
-        b.attach_uprobe(
-            name="ssl",
-            sym="SSL_write",
-            fn_name="ssl_write_entry"
-        )
-        b.attach_uretprobe(
-            name="ssl",
-            sym="SSL_write",
-            fn_name="ssl_write_return"
-        )
+
+        if not cfg["no_libssl"]:
+            print("Adding probes to libssl...")
+            b.attach_uprobe(
+                name="ssl",
+                sym="SSL_read",
+                fn_name="ssl_read_entry"
+            )
+            b.attach_uretprobe(
+                name="ssl",
+                sym="SSL_read",
+                fn_name="ssl_read_return"
+            )
+            b.attach_uprobe(
+                name="ssl",
+                sym="SSL_write",
+                fn_name="ssl_write_entry"
+            )
+            b.attach_uretprobe(
+                name="ssl",
+                sym="SSL_write",
+                fn_name="ssl_write_return"
+            )
+
+        if not cfg["no_libgnutls"]:
+            print("Adding probes to libgnutls...")
+            b.attach_uprobe(
+                name="gnutls",
+                sym="gnutls_record_recv",
+                fn_name="ssl_read_entry"
+            )
+            b.attach_uretprobe(
+                name="gnutls",
+                sym="gnutls_record_recv",
+                fn_name="ssl_read_return"
+            )
+            b.attach_uprobe(
+                name="gnutls",
+                sym="gnutls_record_send",
+                fn_name="ssl_write_entry"
+            )
+            b.attach_uretprobe(
+                name="gnutls",
+                sym="gnutls_record_send",
+                fn_name="ssl_write_return"
+            )
         return b
+
     except Exception as ex:
         print("ERROR: {}".format(str(ex)))
         return None
@@ -197,7 +241,7 @@ def perf_loop(cfg, bpf):
 
 def main():
     cfg = get_cfg()
-    b = setup_bpf()
+    b = setup_bpf(cfg)
     if b is None:
         return
 
@@ -208,7 +252,7 @@ def main():
 
     # Print output header
     print(
-        "%-18s %-16s %-6s %-6s %-5s %-6s" % (
+        "\n%-18s %-16s %-6s %-6s %-5s %-6s" % (
             "TIME(s)",
             "COMM",
             "PID",
