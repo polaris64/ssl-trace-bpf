@@ -13,6 +13,13 @@ def get_cfg():
     """Return runtime configuration from CLI args."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "-c",
+        dest="filter_comm",
+        required=False,
+        help="Filter captures by command name "
+        "(regardless of PID unless -p is also specified)"
+    )
+    parser.add_argument(
         "-e",
         dest="encoding",
         required=False,
@@ -37,6 +44,7 @@ def get_cfg():
 
     return {
         "encoding": args.encoding,
+        "filter_comm": args.filter_comm,
         "filter_pid": int(args.filter_pid) if args.filter_pid else None,
         "out_path": os.path.abspath(args.output_path)
         if args.output_path else None,
@@ -96,41 +104,21 @@ def write_output(cfg, state):
             json.dump(state["capture"], fh)
 
 
-def main():
-    cfg = get_cfg()
-    state = {
-        "capture": {},
-    }
-
-    b = setup_bpf()
-    if b is None:
-        return
-
-    if cfg["filter_pid"] is not None:
-        print("Filtering on PID == {}".format(cfg["filter_pid"]))
-
-    # Print output header
-    print(
-        "%-18s %-16s %-6s %-6s %-5s %-6s" % (
-            "TIME(s)",
-            "COMM",
-            "PID",
-            "TID",
-            "TYPE",
-            "LEN(b)"
-        )
-    )
-
+def perf_loop(cfg, bpf):
+    """Initiate perf event capture and enter polling loop."""
     def handle_event(cpu, data, size):
         """Handle a single perf event from BPF"""
         global start_ns
 
         # Fetch event struct
-        event = b["tls_events"].event(data)
+        event = bpf["tls_events"].event(data)
 
-        # Get source PID and filter if necessary
+        # Get source PID and command name and filter if necessary
         e_pid = event.pid
+        e_comm = bytes(event.comm).decode("utf-8")
         if cfg["filter_pid"] is not None and e_pid != cfg["filter_pid"]:
+            return
+        if cfg["filter_comm"] is not None and e_comm != cfg["filter_comm"]:
             return
 
         # Set the start point for relative timestamps if necessary
@@ -139,7 +127,6 @@ def main():
 
         # Get relevant event fields
         time_s = (float(event.timestamp_ns - start_ns)) / 1000000000
-        e_comm = bytes(event.comm).decode("utf-8")
         e_tid = event.tid
         e_type = get_event_type(event.type)
         e_len = event.data_len
@@ -192,16 +179,47 @@ def main():
             print(enc_data)
 
     # Open the BPF perf buffer and pass events to handle_event()
-    b["tls_events"].open_perf_buffer(handle_event)
+    bpf["tls_events"].open_perf_buffer(handle_event)
+
+    state = {
+        "capture": {},
+    }
 
     # Poll the buffer for events. On KeyboardInterrupt call
     # write_output() to save captures to a file if necessary.
     while 1:
         try:
-            b.perf_buffer_poll()
+            bpf.perf_buffer_poll()
         except KeyboardInterrupt:
             write_output(cfg, state)
             break
+
+
+def main():
+    cfg = get_cfg()
+    b = setup_bpf()
+    if b is None:
+        return
+
+    if cfg["filter_comm"] is not None:
+        print("Filtering on command name == \"{}\"".format(cfg["filter_comm"]))
+    if cfg["filter_pid"] is not None:
+        print("Filtering on PID == {}".format(cfg["filter_pid"]))
+
+    # Print output header
+    print(
+        "%-18s %-16s %-6s %-6s %-5s %-6s" % (
+            "TIME(s)",
+            "COMM",
+            "PID",
+            "TID",
+            "TYPE",
+            "LEN(b)"
+        )
+    )
+
+    # Start capture
+    perf_loop(cfg, b)
 
 
 if __name__ == '__main__':
