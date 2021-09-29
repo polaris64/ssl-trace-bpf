@@ -23,7 +23,7 @@ def get_cfg():
         "-e",
         dest="encoding",
         required=False,
-        default="base64",
+        default="repr",
         choices=["base64", "repr"],
         help="Encoding of captured data for JSON output"
     )
